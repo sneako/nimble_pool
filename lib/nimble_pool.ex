@@ -129,6 +129,7 @@ defmodule NimblePool do
   def start_link(opts) do
     {{worker, arg}, opts} = Keyword.pop(opts, :worker)
     {pool_size, opts} = Keyword.pop(opts, :pool_size, 10)
+    {init_func, opts} = Keyword.pop(opts, :init_func, & &1)
 
     unless is_atom(worker) do
       raise ArgumentError, "worker must be an atom, got: #{inspect(worker)}"
@@ -138,7 +139,7 @@ defmodule NimblePool do
       raise ArgumentError, "pool_size must be more than 0, got: #{inspect(pool_size)}"
     end
 
-    GenServer.start_link(__MODULE__, {worker, arg, pool_size}, opts)
+    GenServer.start_link(__MODULE__, {worker, arg, pool_size, init_func}, opts)
   end
 
   @doc """
@@ -239,7 +240,7 @@ defmodule NimblePool do
   ## Callbacks
 
   @impl true
-  def init({worker, arg, pool_size}) do
+  def init({worker, arg, pool_size, init_func}) do
     Process.flag(:trap_exit, true)
 
     {resources, async} =
@@ -247,7 +248,7 @@ defmodule NimblePool do
         init_worker(worker, arg, resources, async)
       end)
 
-    state = %{
+    state = init_func.(%{
       resources: resources,
       worker: worker,
       arg: arg,
@@ -255,7 +256,7 @@ defmodule NimblePool do
       requests: %{},
       monitors: %{},
       async: async
-    }
+    })
 
     {:ok, state}
   end
