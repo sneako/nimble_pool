@@ -129,7 +129,7 @@ defmodule NimblePool do
   def start_link(opts) do
     {{worker, arg}, opts} = Keyword.pop(opts, :worker)
     {pool_size, opts} = Keyword.pop(opts, :pool_size, 10)
-    {init_func, opts} = Keyword.pop(opts, :init_func, & &1)
+    {init_func, opts} = Keyword.pop(opts, :init_func, &{:ok, &1})
 
     unless is_atom(worker) do
       raise ArgumentError, "worker must be an atom, got: #{inspect(worker)}"
@@ -248,7 +248,7 @@ defmodule NimblePool do
         init_worker(worker, arg, resources, async)
       end)
 
-    state = init_func.(%{
+    init_func.(%{
       resources: resources,
       worker: worker,
       arg: arg,
@@ -257,8 +257,6 @@ defmodule NimblePool do
       monitors: %{},
       async: async
     })
-
-    {:ok, state}
   end
 
   @impl true
