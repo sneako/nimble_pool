@@ -346,7 +346,7 @@ defmodule NimblePool do
     {restart, opts} = Keyword.pop(opts, :restart, :permanent)
     {shutdown, opts} = Keyword.pop(opts, :shutdown, 5_000)
 
-    %{
+    %{ 
       id: worker,
       start: {__MODULE__, :start_link, [opts]},
       shutdown: shutdown,
@@ -547,12 +547,12 @@ defmodule NimblePool do
     with {:ok, pool_state} <- do_init_pool(worker, arg) do
       {pool_state, resources, async} =
         if is_nil(lazy) do
-          Enum.reduce(1..pool_size, {pool_state, :queue.new(), %{}}, fn
+          Enum.reduce(1..pool_size, {pool_state, [], %{}}, fn
             _, {pool_state, resources, async} ->
               init_worker(worker, pool_state, resources, async, worker_idle_timeout)
           end)
         else
-          {pool_state, :queue.new(), %{}}
+          {pool_state, [], %{}}
         end
 
       state = %{
@@ -607,7 +607,7 @@ defmodule NimblePool do
 
   @impl true
   def handle_info({__MODULE__, :checkin, ref, worker_client_state}, state) do
-    %{
+    %{ 
       requests: requests,
       resources: resources,
       worker: worker,
@@ -628,7 +628,7 @@ defmodule NimblePool do
         {resources, state} =
           case checkin do
             {:ok, worker_server_state, pool_state} ->
-              {:queue.in({worker_server_state, get_metadata(worker_idle_timeout)}, resources),
+              {[{worker_server_state, get_metadata(worker_idle_timeout)} | resources],
                %{state | state: pool_state}}
 
             {:remove, reason, pool_state} ->
@@ -651,7 +651,7 @@ defmodule NimblePool do
 
   @impl true
   def handle_info({__MODULE__, :init_worker}, state) do
-    %{
+    %{ 
       async: async,
       resources: resources,
       worker: worker,
@@ -698,7 +698,7 @@ defmodule NimblePool do
     case async do
       %{^ref => _} ->
         Process.demonitor(ref, [:flush])
-        resources = :queue.in({worker_state, get_metadata(worker_idle_timeout)}, resources)
+        resources = [{worker_state, get_metadata(worker_idle_timeout)} | resources]
         async = Map.delete(async, ref)
         state = %{state | async: async, resources: resources}
         {:noreply, maybe_checkout(state)}
@@ -713,7 +713,7 @@ defmodule NimblePool do
         :check_idle,
         %{resources: resources, worker_idle_timeout: worker_idle_timeout} = state
       ) do
-    case check_idle_resources(resources, state) do
+    case check_idle_resources(Enum.reverse(resources), state) do
       {:ok, new_resources, new_state} ->
         Process.send_after(self(), :check_idle, worker_idle_timeout)
         {:noreply, %{new_state | resources: new_resources}}
@@ -730,7 +730,7 @@ defmodule NimblePool do
 
   @impl true
   def terminate(reason, %{worker: worker, resources: resources} = state) do
-    for {worker_server_state, _} <- :queue.to_list(resources) do
+    for {worker_server_state, _} <- resources do
       maybe_terminate_worker(reason, worker_server_state, state)
     end
 
@@ -750,7 +750,7 @@ defmodule NimblePool do
   end
 
   defp remove_async_ref(ref, state) do
-    %{
+    %{ 
       async: async,
       resources: resources,
       worker: worker,
@@ -807,12 +807,14 @@ defmodule NimblePool do
     %{resources: resources, worker: worker, worker_idle_timeout: worker_idle_timeout} = state
 
     if function_exported?(worker, :handle_info, 2) do
+      # We iterate over the list in the order they are in the stack (MRU -> LRU)
       {resources, state} =
-        Enum.reduce(:queue.to_list(resources), {:queue.new(), state}, fn
+        Enum.reduce(resources, {[], state}, fn
           {worker_server_state, _}, {resources, state} ->
             case apply_worker_callback(worker, :handle_info, [msg, worker_server_state]) do
               {:ok, worker_server_state} ->
-                {:queue.in({worker_server_state, get_metadata(worker_idle_timeout)}, resources),
+                # Prepend to the accumulator (will be reversed order)
+                {[{worker_server_state, get_metadata(worker_idle_timeout)} | resources],
                  state}
 
               {:remove, reason} ->
@@ -820,7 +822,8 @@ defmodule NimblePool do
             end
         end)
 
-      {:noreply, %{state | resources: resources}}
+      # Reverse the resources back to restore stack order
+      {:noreply, %{state | resources: Enum.reverse(resources)}}
     else
       {:noreply, state}
     end
@@ -856,8 +859,8 @@ defmodule NimblePool do
       %{resources: resources, requests: requests, worker: worker, queue: queue, state: pool_state} =
         state = init_worker_if_lazy_and_empty(state)
 
-      case :queue.out(resources) do
-        {{:value, {worker_server_state, _}}, resources} ->
+      case resources do
+        [{worker_server_state, _} | resources] ->
           args = [command, from, worker_server_state, pool_state]
 
           case apply_worker_callback(pool_state, worker, :handle_checkout, args) do
@@ -884,7 +887,7 @@ defmodule NimblePool do
               """
           end
 
-        {:empty, _} ->
+        [] ->
           %{state | queue: :queue.in(from, queue)}
       end
     end
@@ -895,7 +898,7 @@ defmodule NimblePool do
   defp init_worker_if_lazy_and_empty(
          %{lazy: lazy, resources: resources, worker_idle_timeout: worker_idle_timeout} = state
        ) do
-    if lazy > 0 and :queue.is_empty(resources) do
+    if lazy > 0 and resources == [] do
       %{async: async, worker: worker, state: pool_state} = state
 
       {pool_state, resources, async} =
@@ -926,20 +929,19 @@ defmodule NimblePool do
 
   defp check_idle_resources(resources, state) do
     now_in_ms = System.monotonic_time(:millisecond)
-    do_check_idle_resources(resources, now_in_ms, state, :queue.new(), state.max_idle_pings)
+    do_check_idle_resources(resources, now_in_ms, state, [], state.max_idle_pings)
   end
 
   defp do_check_idle_resources(resources, _now_in_ms, state, new_resources, 0) do
-    {:ok, :queue.join(new_resources, resources), state}
+    {:ok, Enum.reverse(resources) ++ new_resources, state}
   end
 
   defp do_check_idle_resources(resources, now_in_ms, state, new_resources, remaining_pings) do
-    case :queue.out(resources) do
-      {:empty, _} ->
+    case resources do
+      [] ->
         {:ok, new_resources, state}
 
-      {{:value, resource_data}, next_resources} ->
-        {worker_server_state, worker_metadata} = resource_data
+      [{worker_server_state, worker_metadata} = resource_data | next_resources] ->
         time_diff = now_in_ms - worker_metadata
 
         if time_diff >= state.worker_idle_timeout do
@@ -949,7 +951,7 @@ defmodule NimblePool do
               # if we are checking for idle resources again and the timestamp is the same,
               # it is because it has to be checked again.
               new_resource_data = {new_worker_state, worker_metadata}
-              new_resources = :queue.in(new_resource_data, new_resources)
+              new_resources = [new_resource_data | new_resources]
 
               do_check_idle_resources(
                 next_resources,
@@ -974,7 +976,7 @@ defmodule NimblePool do
               {:stop, reason, state}
           end
         else
-          {:ok, :queue.join(new_resources, resources), state}
+          {:ok, Enum.reverse(resources) ++ new_resources, state}
         end
     end
   end
@@ -1041,8 +1043,7 @@ defmodule NimblePool do
   defp init_worker(worker, pool_state, resources, async, worker_idle_timeout) do
     case apply_worker_callback(worker, :init_worker, [pool_state]) do
       {:ok, worker_state, pool_state} ->
-        {pool_state, :queue.in({worker_state, get_metadata(worker_idle_timeout)}, resources),
-         async}
+        {pool_state, [{worker_state, get_metadata(worker_idle_timeout)} | resources], async}
 
       {:async, fun, pool_state} when is_function(fun, 0) ->
         %{ref: ref, pid: pid} = Task.Supervisor.async(NimblePool.TaskSupervisor, fun)
