@@ -346,7 +346,7 @@ defmodule NimblePool do
     {restart, opts} = Keyword.pop(opts, :restart, :permanent)
     {shutdown, opts} = Keyword.pop(opts, :shutdown, 5_000)
 
-    %{ 
+    %{
       id: worker,
       start: {__MODULE__, :start_link, [opts]},
       shutdown: shutdown,
@@ -384,11 +384,11 @@ defmodule NimblePool do
 
   """
   @spec start_link(keyword) :: GenServer.on_start()
-  def start_link(opts) when is_list(opts) do
-    {partitions, opts} = Keyword.pop(opts, :partitions)
+  if Code.ensure_loaded?(PartitionSupervisor) do
+    def start_link(opts) when is_list(opts) do
+      {partitions, opts} = Keyword.pop(opts, :partitions)
 
-    if partitions do
-      if Code.ensure_loaded?(PartitionSupervisor) do
+      if partitions do
         {name, opts} = Keyword.pop(opts, :name)
 
         unless name do
@@ -401,9 +401,15 @@ defmodule NimblePool do
           partitions: partitions
         )
       else
+        do_start_link(opts)
+      end
+    end
+  else
+    def start_link(opts) when is_list(opts) do
+      if Keyword.has_key?(opts, :partitions) do
         raise ArgumentError, "PartitionSupervisor (Elixir v1.14+) is required for :partitions"
       end
-    else
+
       do_start_link(opts)
     end
   end
@@ -536,17 +542,19 @@ defmodule NimblePool do
 
   defp resolve_pool(pid) when is_pid(pid), do: pid
 
-  defp resolve_pool(name) when is_atom(name) do
-    if Code.ensure_loaded?(PartitionSupervisor) do
+  if Code.ensure_loaded?(PartitionSupervisor) do
+    defp resolve_pool(name) when is_atom(name) do
       try do
         GenServer.whereis({:via, PartitionSupervisor, {name, self()}})
       catch
-        :exit, {_, {GenServer, :call, _}} -> GenServer.whereis(name)
+        _, _ -> GenServer.whereis(name)
       else
         pid when is_pid(pid) -> pid
         nil -> GenServer.whereis(name)
       end
-    else
+    end
+  else
+    defp resolve_pool(name) when is_atom(name) do
       GenServer.whereis(name)
     end
   end
@@ -616,7 +624,7 @@ defmodule NimblePool do
         queue: :queue.new(),
         requests: %{},
         monitors: %{},
-        resources: resources,
+        resources: Enum.reverse(resources),
         async: async,
         state: pool_state,
         lazy: lazy,
@@ -663,7 +671,7 @@ defmodule NimblePool do
 
   @impl true
   def handle_info({__MODULE__, :checkin, ref, worker_client_state}, state) do
-    %{ 
+    %{
       requests: requests,
       resources: resources,
       worker: worker,
@@ -707,7 +715,7 @@ defmodule NimblePool do
 
   @impl true
   def handle_info({__MODULE__, :init_worker}, state) do
-    %{ 
+    %{
       async: async,
       resources: resources,
       worker: worker,
@@ -806,7 +814,7 @@ defmodule NimblePool do
   end
 
   defp remove_async_ref(ref, state) do
-    %{ 
+    %{
       async: async,
       resources: resources,
       worker: worker,
@@ -870,8 +878,7 @@ defmodule NimblePool do
             case apply_worker_callback(worker, :handle_info, [msg, worker_server_state]) do
               {:ok, worker_server_state} ->
                 # Prepend to the accumulator (will be reversed order)
-                {[{worker_server_state, get_metadata(worker_idle_timeout)} | resources],
-                 state}
+                {[{worker_server_state, get_metadata(worker_idle_timeout)} | resources], state}
 
               {:remove, reason} ->
                 {resources, remove_worker(reason, worker_server_state, state)}
