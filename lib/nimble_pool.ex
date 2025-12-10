@@ -377,9 +377,38 @@ defmodule NimblePool do
       for each cycle of the `handle_ping/2` optional callback.
       Defaults to no limit. See `handle_ping/2` for more details.
 
+    * `:partitions` - When set to a positive integer, starts a `PartitionSupervisor`
+      that manages `partitions` number of pools. This is useful to reduce contention
+      in highly concurrent environments. Defaults to `nil` (no partitioning).
+      Requires Elixir v1.14+.
+
   """
   @spec start_link(keyword) :: GenServer.on_start()
   def start_link(opts) when is_list(opts) do
+    {partitions, opts} = Keyword.pop(opts, :partitions)
+
+    if partitions do
+      if Code.ensure_loaded?(PartitionSupervisor) do
+        {name, opts} = Keyword.pop(opts, :name)
+
+        unless name do
+          raise ArgumentError, ":name option is required when :partitions is used"
+        end
+
+        PartitionSupervisor.start_link(
+          child_spec: {__MODULE__, opts},
+          name: name,
+          partitions: partitions
+        )
+      else
+        raise ArgumentError, "PartitionSupervisor (Elixir v1.14+) is required for :partitions"
+      end
+    else
+      do_start_link(opts)
+    end
+  end
+
+  defp do_start_link(opts) do
     {{worker, arg}, opts} =
       Keyword.pop_lazy(opts, :worker, fn ->
         raise ArgumentError, "missing required :worker option"
@@ -419,7 +448,13 @@ defmodule NimblePool do
   """
   @spec stop(pool, reason :: term, timeout) :: :ok
   def stop(pool, reason \\ :normal, timeout \\ :infinity) do
-    GenServer.stop(pool, reason, timeout)
+    pid = resolve_pool(pool)
+
+    if pid do
+      GenServer.stop(pid, reason, timeout)
+    else
+      exit({:noproc, {__MODULE__, :stop, [pool, reason, timeout]}})
+    end
   end
 
   @doc """
@@ -442,7 +477,7 @@ defmodule NimblePool do
         when function: (from, client_state -> {result, client_state}), result: var
   def checkout!(pool, command, function, timeout \\ 5_000) when is_function(function, 2) do
     # Re-implementation of gen.erl call to avoid multiple monitors.
-    pid = GenServer.whereis(pool)
+    pid = resolve_pool(pool)
 
     unless pid do
       exit!(:noproc, :checkout, [pool])
@@ -497,6 +532,27 @@ defmodule NimblePool do
   def update({pid, ref} = _from, command) do
     send(pid, {__MODULE__, :update, ref, command})
     :ok
+  end
+
+  defp resolve_pool(pid) when is_pid(pid), do: pid
+
+  defp resolve_pool(name) when is_atom(name) do
+    if Code.ensure_loaded?(PartitionSupervisor) do
+      try do
+        GenServer.whereis({:via, PartitionSupervisor, {name, self()}})
+      catch
+        :exit, {_, {GenServer, :call, _}} -> GenServer.whereis(name)
+      else
+        pid when is_pid(pid) -> pid
+        nil -> GenServer.whereis(name)
+      end
+    else
+      GenServer.whereis(name)
+    end
+  end
+
+  defp resolve_pool(pool) do
+    GenServer.whereis(pool)
   end
 
   defp deadline(timeout) when is_integer(timeout) do
@@ -941,7 +997,7 @@ defmodule NimblePool do
       [] ->
         {:ok, new_resources, state}
 
-      [{worker_server_state, worker_metadata} = resource_data | next_resources] ->
+      [{worker_server_state, worker_metadata} | next_resources] ->
         time_diff = now_in_ms - worker_metadata
 
         if time_diff >= state.worker_idle_timeout do

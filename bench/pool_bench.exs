@@ -18,7 +18,7 @@ defmodule BenchPool do
   end
 end
 
-{:ok, _pid} = NimblePool.start_link(worker: {BenchPool, :ok}, pool_size: 10, name: BenchPool)
+{:ok, _pid} = NimblePool.start_link(worker: {BenchPool, :ok}, pool_size: 10, name: BenchPool, partitions: System.schedulers_online())
 
 Benchee.run(
   %{
