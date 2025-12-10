@@ -15,8 +15,7 @@ defmodule NimblePool.MixProject do
       deps: deps(),
       docs: docs(),
       package: package(),
-      test_coverage: [tool: ExCoveralls],
-      preferred_cli_env: ["coveralls.html": :test]
+      test_coverage: [tool: ExCoveralls]
     ]
   end
 
@@ -27,10 +26,15 @@ defmodule NimblePool.MixProject do
     ]
   end
 
+  def cli do
+    [preferred_envs: ["coveralls.html": :test]]
+  end
+
   defp deps do
     [
       {:ex_doc, "~> 0.31", only: :docs},
-      {:excoveralls, "~> 0.16.1", only: :test}
+      {:excoveralls, "~> 0.16.1", only: :test},
+      {:benchee, "~> 1.0", only: [:dev, :test]}
     ]
   end
 

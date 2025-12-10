@@ -1,0 +1,30 @@
+Generated nimble_pool app
+Operating System: macOS
+CPU Information: Apple M3 Max
+Number of Available Cores: 16
+Available memory: 64 GB
+Elixir 1.19.1
+Erlang 28.1.1
+JIT enabled: true
+
+Benchmark suite executing with the following configuration:
+warmup: 2 s
+time: 5 s
+memory time: 2 s
+reduction time: 0 ns
+parallel: 10
+inputs: none specified
+Estimated total run time: 9 s
+Excluding outliers: false
+
+Benchmarking checkout! ...
+Calculating statistics...
+Formatting results...
+
+Name                ips        average  deviation         median         99th %
+checkout!       53.93 K       18.54 μs    ±42.89%       17.83 μs       38.13 μs
+
+Memory usage statistics:
+
+Name              average  deviation         median         99th %
+checkout!        223.74 B     ±1.58%          224 B          224 B
