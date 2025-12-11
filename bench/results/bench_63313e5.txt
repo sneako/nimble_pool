@@ -1,0 +1,29 @@
+Operating System: macOS
+CPU Information: Apple M3 Max
+Number of Available Cores: 16
+Available memory: 64 GB
+Elixir 1.19.1
+Erlang 28.1.1
+JIT enabled: true
+
+Benchmark suite executing with the following configuration:
+warmup: 2 s
+time: 5 s
+memory time: 2 s
+reduction time: 0 ns
+parallel: 10
+inputs: none specified
+Estimated total run time: 9 s
+Excluding outliers: false
+
+Benchmarking checkout! ...
+Calculating statistics...
+Formatting results...
+
+Name                ips        average  deviation         median         99th %
+checkout!      133.74 K        7.48 μs   ±112.63%           6 μs       26.79 μs
+
+Memory usage statistics:
+
+Name              average  deviation         median         99th %
+checkout!        279.64 B     ±1.48%          280 B          280 B
