@@ -8,7 +8,8 @@ defmodule NimblePoolTest do
     def init_pool(rest), do: {:ok, rest}
 
     def init_worker([{:init_worker, fun} | rest] = pool_state) do
-      Tuple.append(fun.(rest), pool_state)
+      tuple = fun.(rest)
+      Tuple.insert_at(tuple, tuple_size(tuple), pool_state)
     end
 
     def handle_checkout(command, from, instructions, pool_state) do
@@ -55,14 +56,10 @@ defmodule NimblePoolTest do
           [{^instruction, return} | instructions] when is_function(return) ->
             {return, instructions}
 
-          # Always accept terminate_pool as a valid instruction when there is no more instructions
-          [] = state ->
-            if instruction == :terminate_pool,
-              do: {fn _, _ -> :ok end, []},
-              else: raise("expected #{inspect(instruction)}, state was #{inspect(state)}")
-
           state ->
-            raise "expected #{inspect(instruction)}, state was #{inspect(state)}"
+            if instruction == :terminate_pool,
+              do: {fn _, _ -> :ok end, state},
+              else: raise("expected #{inspect(instruction)}, state was #{inspect(state)}")
         end)
 
       apply(return, args)
@@ -118,7 +115,13 @@ defmodule NimblePoolTest do
   end
 
   defp stateful_pool!(instructions, opts \\ []) do
-    {:ok, agent} = TestAgent.start_link(instructions)
+    agent =
+      start_supervised!(%{
+        id: TestAgent,
+        start: {TestAgent, :start_link, [instructions]},
+        restart: :temporary
+      })
+
     {agent, start_pool!(StatefulPool, agent, opts)}
   end
 
@@ -1825,7 +1828,7 @@ defmodule NimblePoolTest do
 
     test "partitioned pool" do
       if Code.ensure_loaded?(PartitionSupervisor) do
-        {_, pool} =
+        {_, _pool} =
           stateful_pool!(
             [
               init_worker: fn next -> {:ok, :worker1, next} end,
@@ -1844,8 +1847,9 @@ defmodule NimblePoolTest do
             name: :partitioned_pool
           )
 
-        assert NimblePool.checkout!(:partitioned_pool, :checkout, fn _, _ -> {:ok, :ok} end) ==
-                 :ok
+        assert NimblePool.checkout!(:partitioned_pool, :checkout, fn _, _ ->
+                 {:ok, :client_state_in}
+               end) == :ok
       end
     end
   end
