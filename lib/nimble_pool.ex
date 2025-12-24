@@ -310,6 +310,13 @@ defmodule NimblePool do
   * `:checked_out` means the cancellation happened after resource checkout. This may happen
   when the function given to `checkout!/4` raises.
 
+  The `reason` is the cancellation reason (such as `:DOWN` or `:timeout`). When the
+  context is `:checked_out`, the `worker_state` is the checked-out resource.
+
+  Returning `{:ok, worker_state, pool_state}` keeps the worker in the pool, while
+  `{:remove, reason, pool_state}` removes it. Returning `:ok` keeps the previous
+  behavior (remove on `:checked_out`).
+
   This callback is optional.
   """
   @doc callback: :pool
@@ -317,6 +324,14 @@ defmodule NimblePool do
               context :: :queued | :checked_out,
               pool_state
             ) :: :ok
+
+  @doc callback: :pool
+  @callback handle_cancelled(
+              context :: :queued | :checked_out,
+              reason :: term(),
+              worker_state :: term() | nil,
+              pool_state
+            ) :: :ok | {:ok, worker_state, pool_state} | {:remove, user_reason, pool_state}
 
   @optional_callbacks init_pool: 1,
                       handle_checkin: 4,
@@ -326,7 +341,8 @@ defmodule NimblePool do
                       handle_ping: 2,
                       terminate_worker: 3,
                       terminate_pool: 2,
-                      handle_cancelled: 2
+                      handle_cancelled: 2,
+                      handle_cancelled: 4
 
   @doc """
   Defines a pool to be started under the supervision tree.
@@ -770,36 +786,101 @@ defmodule NimblePool do
   defp cancel_request_ref(
          ref,
          reason,
-         %{requests: requests, worker: worker, state: pool_state} = state
+         %{
+           requests: requests,
+           worker: worker,
+           state: pool_state,
+           resources: resources,
+           worker_idle_timeout: worker_idle_timeout
+         } = state
        ) do
     case requests do
       # Exited or timed out before we could serve it
       %{^ref => {_, mon_ref, :command, _command, _deadline}} ->
-        if function_exported?(worker, :handle_cancelled, 2) do
-          args = [:queued, pool_state]
-          apply_worker_callback(worker, :handle_cancelled, args)
-        end
+        maybe_handle_cancelled(worker, :queued, reason, nil, pool_state)
 
         {:noreply, remove_request(state, ref, mon_ref)}
 
       # Exited or errored during client processing
       %{^ref => {_, mon_ref, :state, worker_server_state}} ->
-        if function_exported?(worker, :handle_cancelled, 2) do
-          args = [:checked_out, pool_state]
-          apply_worker_callback(worker, :handle_cancelled, args)
-        end
-
         state = remove_request(state, ref, mon_ref)
-        {:noreply, remove_worker(reason, worker_server_state, state)}
+
+        case handle_cancelled_checked_out(worker, reason, worker_server_state, pool_state) do
+          {:ok, worker_server_state, pool_state} ->
+            resources =
+              :queue.in({worker_server_state, get_metadata(worker_idle_timeout)}, resources)
+
+            state = %{state | resources: resources, state: pool_state}
+            {:noreply, maybe_checkout(state)}
+
+          {:remove, remove_reason, pool_state} ->
+            state = %{state | state: pool_state}
+            {:noreply, remove_worker(remove_reason, worker_server_state, state)}
+        end
 
       # The client timed out, sent us a message, and we dropped the deadlined request
       %{} ->
-        if function_exported?(worker, :handle_cancelled, 2) do
-          args = [:queued, pool_state]
-          apply_worker_callback(worker, :handle_cancelled, args)
-        end
+        maybe_handle_cancelled(worker, :queued, reason, nil, pool_state)
 
         {:noreply, state}
+    end
+  end
+
+  defp handle_cancelled_checked_out(worker, reason, worker_server_state, pool_state) do
+    result =
+      cond do
+        function_exported?(worker, :handle_cancelled, 4) ->
+          args = [:checked_out, reason, worker_server_state, pool_state]
+          apply_worker_callback(pool_state, worker, :handle_cancelled, args)
+
+        function_exported?(worker, :handle_cancelled, 2) ->
+          args = [:checked_out, pool_state]
+          apply_worker_callback(worker, :handle_cancelled, args)
+          :ok
+
+        true ->
+          :ok
+      end
+
+    case result do
+      {:ok, worker_state, pool_state} ->
+        {:ok, worker_state, pool_state}
+
+      {:remove, remove_reason, pool_state} ->
+        {:remove, remove_reason, pool_state}
+
+      :ok ->
+        {:remove, reason, pool_state}
+
+      other ->
+        raise """
+        unexpected return from #{inspect(worker)}.handle_cancelled/4.
+
+        Expected:
+
+            :ok
+            | {:ok, worker_state, pool_state}
+            | {:remove, reason, pool_state}
+
+        Got: #{inspect(other)}
+        """
+    end
+  end
+
+  defp maybe_handle_cancelled(worker, context, reason, worker_state, pool_state) do
+    cond do
+      function_exported?(worker, :handle_cancelled, 4) ->
+        args = [context, reason, worker_state, pool_state]
+        apply_worker_callback(pool_state, worker, :handle_cancelled, args)
+        :ok
+
+      function_exported?(worker, :handle_cancelled, 2) ->
+        args = [context, pool_state]
+        apply_worker_callback(worker, :handle_cancelled, args)
+        :ok
+
+      true ->
+        :ok
     end
   end
 
